@@ -3,6 +3,15 @@ const STORAGE_KEY = 'rework-dashboard-data-v13';
 let reworkData = [];
 let trendChart = null;
 let causeChart = null;
+const AI_BASE_URL = 'http://localhost:3001';
+const AI_ENDPOINT = `${AI_BASE_URL}/api/ai-insights`;
+const AI_HEALTH_ENDPOINT = `${AI_BASE_URL}/health`;
+const DEFAULT_PERFORMANCE_GOALS = {
+  reworkCost: 7000000,
+  releaseRate: 40,
+  rootCauseAssignment: 90
+};
+let PERFORMANCE_GOALS = { ...DEFAULT_PERFORMANCE_GOALS };
 
 // Track sort state for defect drivers table
 let defectDriversSortMode = 'cases'; // Options: 'cases', 'cost', 'lag'
@@ -12,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadStoredData();
   hookUpDateEvents();
   setupDefectDriversSorting();
+  setupAIInsights();
   renderDashboard();
 });
 
@@ -23,6 +33,7 @@ function loadCSV() {
   const fileInput = document.getElementById('csvFile');
   const loadBtn = document.getElementById('loadBtn');
   const file = fileInput.files[0];
+  const isExcelFile = /\.(xlsx|xls)$/i.test(file?.name || '');
 
   if (!file) {
     showMessage('Please select a CSV file', 'error');
@@ -46,10 +57,29 @@ function loadCSV() {
       console.log('DEBUG: FileReader onload triggered');
     }
     try {
-      const csv = e.target.result;
-      if (window && window.console) {
-        console.log('DEBUG: CSV file contents (first 500 chars):', csv.slice(0, 500));
+      let csv = '';
+      let goalsApplied = 0;
+
+      if (isExcelFile) {
+        if (typeof XLSX === 'undefined') {
+          showMessage('Excel parsing library failed to load. Please refresh and try again.', 'error');
+          loadBtn.disabled = false;
+          spinner.classList.remove('active');
+          return;
+        }
+
+        const workbook = XLSX.read(e.target.result, { type: 'array' });
+        csv = extractDataCSVFromWorkbook(workbook);
+        goalsApplied = applyGoalsFromWorkbook(workbook);
+      } else {
+        csv = e.target.result;
+        resetPerformanceGoals();
       }
+
+      if (window && window.console) {
+        console.log('DEBUG: Data file contents (first 500 chars):', String(csv).slice(0, 500));
+      }
+
       showMessage('Parsing data...', 'info');
       setTimeout(() => {
         let data = [];
@@ -59,6 +89,29 @@ function loadCSV() {
             console.log('DEBUG: parseCSV returned', data.length, 'rows');
           }
         } catch (parseErr) {
+          let goalsFromCSV = 0;
+          const isDateColumnError = /date column/i.test(String(parseErr?.message || ''));
+
+          if (!isExcelFile && isDateColumnError) {
+            goalsFromCSV = applyGoalsFromCSVText(csv);
+          }
+
+          if (goalsFromCSV > 0) {
+            if (reworkData.length > 0) {
+              renderDashboard();
+            } else {
+              renderPerformanceGoals([]);
+              updateDataInfo();
+            }
+            const dataNote = reworkData.length > 0
+              ? ` Existing data remains loaded (${reworkData.length} records).`
+              : ' Upload a date-based data export to populate dashboard records.';
+            showMessage(`✓ Loaded ${goalsFromCSV} goal(s) from ${file.name}.${dataNote}`, 'success');
+            loadBtn.disabled = false;
+            spinner.classList.remove('active');
+            return;
+          }
+
           showMessage(`CSV parsing failed: ${parseErr.message}`, 'error');
           if (window && window.console) {
             console.error('DEBUG: CSV parsing failed:', parseErr);
@@ -80,7 +133,8 @@ function loadCSV() {
         saveData();
         populateLocationFilter();
         renderDashboard();
-        showMessage(`✓ Successfully loaded ${data.length} records from ${file.name}`, 'success');
+        const goalsNote = goalsApplied > 0 ? ` • ${goalsApplied} goal(s) loaded from Goals sheet` : '';
+        showMessage(`✓ Successfully loaded ${data.length} records from ${file.name}${goalsNote}`, 'success');
         loadBtn.disabled = false;
         spinner.classList.remove('active');
       }, 100);
@@ -98,7 +152,209 @@ function loadCSV() {
     spinner.classList.remove('active');
   };
 
-  reader.readAsText(file);
+  if (isExcelFile) {
+    reader.readAsArrayBuffer(file);
+  } else {
+    reader.readAsText(file);
+  }
+}
+
+function resetPerformanceGoals() {
+  PERFORMANCE_GOALS = { ...DEFAULT_PERFORMANCE_GOALS };
+}
+
+function normalizeHeaderCell(value) {
+  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function rowHasAnyValue(row) {
+  return Array.isArray(row) && row.some((cell) => String(cell || '').trim() !== '');
+}
+
+function scoreDataHeaderRow(row) {
+  if (!Array.isArray(row)) return 0;
+
+  const headers = row.map((cell) => normalizeHeaderCell(cell));
+  const hasMatch = (tokens) => headers.some((header) => tokens.some((token) => header.includes(token)));
+
+  let score = 0;
+  if (hasMatch(['hold date', 'production date', 'date produced', 'prod date', 'date', 'day'])) score += 5;
+  if (hasMatch(['root cause', 'cause', 'reason', 'root'])) score += 2;
+  if (hasMatch(['cases produced', 'casesproduced'])) score += 2;
+  if (hasMatch(['cases reworked', 'casesreworked'])) score += 2;
+  if (hasMatch(['disposition', 'status'])) score += 1;
+  if (hasMatch(['plant', 'work center', 'site', 'location'])) score += 1;
+
+  return score;
+}
+
+function buildCSVFromRows(rows, startRowIndex) {
+  const sliced = rows.slice(startRowIndex).filter((row) => rowHasAnyValue(row));
+  if (sliced.length === 0) return '';
+  return Papa.unparse(sliced);
+}
+
+function extractDataCSVFromWorkbook(workbook) {
+  if (!workbook || !Array.isArray(workbook.SheetNames) || workbook.SheetNames.length === 0) {
+    throw new Error('Workbook has no sheets');
+  }
+
+  const nonGoalSheets = workbook.SheetNames.filter((name) => !String(name).toLowerCase().includes('goal'));
+  const candidateSheets = nonGoalSheets.length > 0 ? nonGoalSheets : workbook.SheetNames;
+
+  let bestMatch = null;
+
+  candidateSheets.forEach((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    if (!sheet) return;
+
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    if (!Array.isArray(rows) || rows.length === 0) return;
+
+    const maxScanRows = Math.min(rows.length, 35);
+    for (let rowIndex = 0; rowIndex < maxScanRows; rowIndex += 1) {
+      const row = rows[rowIndex];
+      if (!rowHasAnyValue(row)) continue;
+
+      const score = scoreDataHeaderRow(row);
+      if (!bestMatch || score > bestMatch.score) {
+        bestMatch = {
+          sheetName,
+          rows,
+          rowIndex,
+          score
+        };
+      }
+    }
+  });
+
+  if (!bestMatch || bestMatch.score < 5) {
+    throw new Error('Could not find a data table with a Date header in the workbook.');
+  }
+
+  if (window && window.console) {
+    console.log('DEBUG: Selected workbook data sheet:', bestMatch.sheetName, 'header row index:', bestMatch.rowIndex, 'score:', bestMatch.score);
+  }
+
+  const csv = buildCSVFromRows(bestMatch.rows, bestMatch.rowIndex);
+  if (!csv) {
+    throw new Error('Unable to extract data rows from workbook.');
+  }
+
+  return csv;
+}
+
+function parseGoalNumber(value) {
+  if (value === null || value === undefined) return NaN;
+  const raw = String(value).trim();
+  if (!raw) return NaN;
+  const normalized = raw.replace(/[%,$\s]/g, '').replace(/,/g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+
+function mapGoalMetric(metricLabel) {
+  const metric = String(metricLabel || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!metric) return null;
+  if (metric.includes('rework cost')) return 'reworkCost';
+  if (metric.includes('release rate') || metric.includes('released')) return 'releaseRate';
+  if (metric.includes('root cause assignment') || metric.includes('assignment')) return 'rootCauseAssignment';
+  if (metric.includes('rework')) return 'reworkCost';
+  if (metric.includes('release')) return 'releaseRate';
+  return null;
+}
+
+function applyGoalsFromWorkbook(workbook) {
+  resetPerformanceGoals();
+  if (!workbook || !Array.isArray(workbook.SheetNames)) return 0;
+
+  const goalsSheetName = workbook.SheetNames.find((name) => String(name).toLowerCase().includes('goal'));
+  if (!goalsSheetName) return 0;
+
+  const goalsSheet = workbook.Sheets[goalsSheetName];
+  if (!goalsSheet) return 0;
+
+  const rows = XLSX.utils.sheet_to_json(goalsSheet, { header: 1, defval: '' });
+  let appliedCount = 0;
+
+  rows.forEach((row) => {
+    if (!Array.isArray(row) || row.length === 0) return;
+
+    const textCells = row
+      .map((cell) => String(cell).trim())
+      .filter((cell) => cell.length > 0);
+    if (textCells.length === 0) return;
+
+    const metricKey = mapGoalMetric(textCells[0]);
+    if (!metricKey) return;
+
+    const valueCandidate = row
+      .map((cell) => parseGoalNumber(cell))
+      .find((num) => Number.isFinite(num));
+
+    if (!Number.isFinite(valueCandidate)) return;
+
+    PERFORMANCE_GOALS[metricKey] = valueCandidate;
+    appliedCount += 1;
+  });
+
+  return appliedCount;
+}
+
+function applyGoalsFromCSVText(csvText) {
+  if (!csvText) return 0;
+
+  const parsed = Papa.parse(csvText, {
+    header: false,
+    skipEmptyLines: true
+  });
+
+  const rows = Array.isArray(parsed.data) ? parsed.data : [];
+  if (rows.length === 0) return 0;
+
+  let appliedCount = 0;
+  const appliedKeys = new Set();
+
+  const applyGoal = (metricLabel, value) => {
+    const metricKey = mapGoalMetric(metricLabel);
+    if (!metricKey || !Number.isFinite(value)) return;
+    PERFORMANCE_GOALS[metricKey] = value;
+    if (!appliedKeys.has(metricKey)) {
+      appliedKeys.add(metricKey);
+      appliedCount += 1;
+    }
+  };
+
+  // Horizontal pattern: header row + value row
+  const maxPairScan = Math.min(rows.length - 1, 12);
+  for (let i = 0; i < maxPairScan; i += 1) {
+    const headerRow = Array.isArray(rows[i]) ? rows[i] : [];
+    const valueRow = Array.isArray(rows[i + 1]) ? rows[i + 1] : [];
+    if (headerRow.length === 0 || valueRow.length === 0) continue;
+
+    for (let col = 0; col < headerRow.length; col += 1) {
+      const goalValue = parseGoalNumber(valueRow[col]);
+      applyGoal(headerRow[col], goalValue);
+    }
+  }
+
+  // Vertical pattern: Metric in first column, goal value in same row
+  const maxVerticalScan = Math.min(rows.length, 30);
+  for (let i = 0; i < maxVerticalScan; i += 1) {
+    const row = Array.isArray(rows[i]) ? rows[i] : [];
+    if (row.length === 0) continue;
+
+    const label = String(row[0] || '').trim();
+    if (!label) continue;
+
+    const valueCandidate = row
+      .map((cell) => parseGoalNumber(cell))
+      .find((num) => Number.isFinite(num));
+
+    applyGoal(label, valueCandidate);
+  }
+
+  return appliedCount;
 }
 
 // ---------- CSV Parsing ----------
@@ -109,15 +365,47 @@ function parseCSV(csv) {
     skipEmptyLines: true
   });
 
+  if (!result.data || result.data.length < 2) return [];
+
+  const normalizeHeader = (value) => String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const scoreHeaderRow = (row) => {
+    if (!Array.isArray(row)) return 0;
+    const normalized = row.map((cell) => normalizeHeader(cell));
+    const hasAny = (tokens) => normalized.some((item) => tokens.some((token) => item.includes(token)));
+    let score = 0;
+    if (hasAny(['holddate', 'productiondate', 'dateproduced', 'proddate', 'date', 'day'])) score += 5;
+    if (hasAny(['casesproduced'])) score += 2;
+    if (hasAny(['casesreworked'])) score += 2;
+    if (hasAny(['rootcause', 'cause', 'reason'])) score += 1;
+    if (hasAny(['disposition', 'status'])) score += 1;
+    return score;
+  };
+
+  const maxScan = Math.min(result.data.length, 40);
+  let headerRowIndex = 0;
+  let bestScore = -1;
+  for (let i = 0; i < maxScan; i += 1) {
+    const score = scoreHeaderRow(result.data[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      headerRowIndex = i;
+    }
+  }
+
+  if (bestScore < 5) {
+    throw new Error('CSV must contain a Date column');
+  }
+
+  const header = result.data[headerRowIndex].map(h => String(h).toLowerCase().trim());
+  const normalizedHeader = header.map(h => normalizeHeader(h));
+
   // Print normalized header array for debugging
-  if (window && window.console && result && result.data && result.data[0]) {
-    const normalizedHeader = result.data[0].map(h => h.replace(/\s+/g, '').toLowerCase());
+  if (window && window.console) {
+    console.log('DEBUG: Header row index selected:', headerRowIndex);
     console.log('DEBUG: Normalized header array:', normalizedHeader);
   }
 
-  if (!result.data || result.data.length < 2) return [];
-
-  const header = result.data[0].map(h => String(h).toLowerCase().trim());
   if (window && window.console) {
     console.log('Parsed CSV header:', header);
   }
@@ -125,12 +413,13 @@ function parseCSV(csv) {
 
   // Resolve column indexes once
   const getColIndex = (keywords) => {
-    return header.findIndex(h => keywords.some(k => h.includes(k)));
+    const normKeywords = keywords.map((keyword) => normalizeHeader(keyword));
+    return normalizedHeader.findIndex(h => normKeywords.some(k => h.includes(k)));
   };
 
   const prodDateCol = getColIndex(['production date', 'product date', 'date produced', 'prod date']);
   const holdDateCol = getColIndex(['hold date', 'date placed', 'date held', 'hold']);
-  const dateCol = prodDateCol !== -1 ? prodDateCol : (holdDateCol !== -1 ? holdDateCol : getColIndex(['date', 'day']));
+  const dateCol = holdDateCol !== -1 ? holdDateCol : (prodDateCol !== -1 ? prodDateCol : getColIndex(['date', 'day']));
 
   const descCol = getColIndex(['description', 'item description', 'desc', 'product', 'item']);
   const typeCol = getColIndex(['type', 'item type', 'category']);
@@ -138,7 +427,7 @@ function parseCSV(csv) {
   const workCenterCol = getColIndex(['workcentertext', 'work center text']);
   const siteCol = getColIndex(['site']);
   // Robustly find the disposition column (case-insensitive, trimmed, supports 'disposition', 'status', etc.)
-  const dispositionCol = header.findIndex(h => {
+  const dispositionCol = normalizedHeader.findIndex(h => {
     const norm = h.replace(/\s+/g, '').toLowerCase();
     return norm === 'disposition' || norm === 'status';
   });
@@ -166,6 +455,9 @@ function parseCSV(csv) {
   const reworkPercentCol = getColIndex(['rework %', 'rework percent', 'percentage', 'percent']);
   const costImpactCol = header.findIndex(h => normalize(h).includes('costimpact'));
   const reworkLagCol = header.findIndex(h => normalize(h).includes('reworklag'));
+  const goalReworkCostCol = getColIndex(['rework cost', 'goal rework cost', 'target rework cost']);
+  const goalReleaseRateCol = getColIndex(['release rate', 'goal release rate', 'target release rate']);
+  const goalRootCauseAssignmentCol = getColIndex(['root cause assignment', 'goal root cause assignment', 'target root cause assignment']);
 
   // Place debug log after all column index initialization
   if (window && window.console) {
@@ -189,7 +481,7 @@ function parseCSV(csv) {
     throw new Error('CSV must contain a Date column');
   }
 
-  for (let i = 1; i < result.data.length; i++) {
+  for (let i = headerRowIndex + 1; i < result.data.length; i++) {
     const row = result.data[i].map(v => String(v).trim());
     if (row.every(v => !v)) continue; // Skip completely empty rows
 
@@ -213,6 +505,10 @@ function parseCSV(csv) {
       rawImpact = rawImpact.replace(/[^0-9.\-]/g, '');
       costImpact = parseFloat(rawImpact) || cost;
     }
+
+    const goalReworkCost = goalReworkCostCol !== -1 ? parseGoalNumber(row[goalReworkCostCol]) : NaN;
+    const goalReleaseRate = goalReleaseRateCol !== -1 ? parseGoalNumber(row[goalReleaseRateCol]) : NaN;
+    const goalRootCauseAssignment = goalRootCauseAssignmentCol !== -1 ? parseGoalNumber(row[goalRootCauseAssignmentCol]) : NaN;
 
     // Assign costRework and costScrap per row for correct aggregation
     let costRework = 0, costScrap = 0;
@@ -256,7 +552,10 @@ function parseCSV(csv) {
       costImpact: costImpact,
       reworkLag: reworkLagCol !== -1 ? row[reworkLagCol] : undefined,
       costRework: costRework,
-      costScrap: costScrap
+      costScrap: costScrap,
+      goalReworkCost,
+      goalReleaseRate,
+      goalRootCauseAssignment
       // Removed per-row reworkPercent for clarity in overall metric
     });
   }
@@ -517,12 +816,14 @@ function renderDashboard() {
   }
 
   showMessage(`✓ Successfully loaded ${active.length} records.`, 'success');
+  renderPerformanceGoals(active);
   calculateMetrics(active);
   renderCharts(active);
   updateDataInfo();
 }
 
 function renderEmptyState() {
+  renderPerformanceGoals([]);
   document.getElementById('totalItems').textContent = '0';
   document.getElementById('reworkPercent').textContent = '0%';
   document.getElementById('topCause').textContent = '—';
@@ -538,6 +839,158 @@ function renderEmptyState() {
 
   if (trendChart) trendChart.destroy();
   if (causeChart) causeChart.destroy();
+}
+
+function getPerformanceStatus(current, goal, direction) {
+  if (!Number.isFinite(current) || !Number.isFinite(goal)) {
+    return { text: 'N/A', className: '' };
+  }
+
+  const delta = current - goal;
+  const absDelta = Math.abs(delta);
+  const atGoalTolerance = Math.max(0.2, Math.abs(goal) * 0.01);
+  const nearTolerance = Math.max(1.0, Math.abs(goal) * 0.05);
+
+  if (absDelta <= atGoalTolerance) {
+    return { text: 'At Goal', className: 'status-at-goal' };
+  }
+
+  if (direction === 'higher') {
+    if (delta > atGoalTolerance) {
+      return { text: 'Exceeds Goal', className: 'status-on-track' };
+    }
+    if (Math.abs(delta) <= nearTolerance || current >= goal - nearTolerance) {
+      return { text: 'Approaching', className: 'status-approaching' };
+    }
+    return { text: 'Off Track', className: 'status-off-track' };
+  }
+
+  if (delta < -atGoalTolerance) {
+    return { text: 'Exceeds Goal', className: 'status-on-track' };
+  }
+  if (Math.abs(delta) <= nearTolerance || current <= goal + nearTolerance) {
+    return { text: 'Approaching', className: 'status-approaching' };
+  }
+  return { text: 'Off Track', className: 'status-off-track' };
+}
+
+function formatPerformanceValue(value, formatType) {
+  if (!Number.isFinite(value)) return 'N/A';
+  if (formatType === 'currency') {
+    return `$${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+  return `${value.toFixed(1)}%`;
+}
+
+function getGoalValueFromData(data, propertyName) {
+  const candidate = data
+    .map((row) => Number(row[propertyName]))
+    .find((value) => Number.isFinite(value));
+  return Number.isFinite(candidate) ? candidate : NaN;
+}
+
+function calculatePopulationFactor(filteredData, fullData) {
+  const safeFiltered = Array.isArray(filteredData) ? filteredData : [];
+  const safeFull = Array.isArray(fullData) ? fullData : [];
+
+  const filteredHoldUnits = safeFiltered.reduce((sum, row) => sum + (parseInt(row.casesProduced) || 0), 0);
+  const fullHoldUnits = safeFull.reduce((sum, row) => sum + (parseInt(row.casesProduced) || 0), 0);
+
+  if (fullHoldUnits > 0) {
+    return Math.max(filteredHoldUnits / fullHoldUnits, 0);
+  }
+
+  if (safeFull.length > 0) {
+    return Math.max(safeFiltered.length / safeFull.length, 0);
+  }
+
+  return 1;
+}
+
+function updatePerformanceGoalsNote(populationFactor, filteredCount, fullCount) {
+  const noteEl = document.getElementById('performanceGoalsNote');
+  if (!noteEl) return;
+
+  if (!Number.isFinite(populationFactor) || fullCount === 0) {
+    noteEl.textContent = 'Goals scaled to 100.0% of total population.';
+    return;
+  }
+
+  const pct = (populationFactor * 100).toFixed(1);
+  noteEl.textContent = `Goals scaled to ${pct}% of total population (${filteredCount.toLocaleString()} of ${fullCount.toLocaleString()} records).`;
+}
+
+function scaleGoalByPopulation(goalValue, populationFactor) {
+  if (!Number.isFinite(goalValue)) return NaN;
+  if (!Number.isFinite(populationFactor) || populationFactor <= 0) return goalValue;
+  return goalValue * populationFactor;
+}
+
+function renderPerformanceGoals(data) {
+  const safeData = Array.isArray(data) ? data : [];
+
+  const totalHoldUnits = safeData.reduce((sum, d) => sum + (parseInt(d.casesProduced) || 0), 0);
+  const totalReworkCost = safeData.reduce((sum, d) => sum + (Number(d.costRework) || 0), 0);
+
+  let releasedUnits = 0;
+  let assignedRootCauseRows = 0;
+
+  safeData.forEach((d) => {
+    const disp = (typeof d.disposition === 'string' ? d.disposition : '').toLowerCase().replace(/\s+/g, '');
+    const produced = parseInt(d.casesProduced) || 0;
+    const reworked = parseInt(d.casesReworked) || 0;
+    const rootCause = String(d.rootCause || '').trim().toLowerCase();
+
+    if (disp === 'rework' || disp.includes('release')) {
+      releasedUnits += Math.max(produced - reworked, 0);
+    }
+    if (rootCause && rootCause !== 'unknown' && rootCause !== 'other' && rootCause !== 'n/a') {
+      assignedRootCauseRows += 1;
+    }
+  });
+
+  const releaseRate = totalHoldUnits > 0 ? (releasedUnits / totalHoldUnits) * 100 : NaN;
+  const rootCauseAssignment = safeData.length > 0 ? (assignedRootCauseRows / safeData.length) * 100 : NaN;
+
+  const goalReworkCostFromData = getGoalValueFromData(safeData, 'goalReworkCost');
+  const goalReleaseRateFromData = getGoalValueFromData(safeData, 'goalReleaseRate');
+  const goalRootCauseAssignmentFromData = getGoalValueFromData(safeData, 'goalRootCauseAssignment');
+
+  const effectiveGoalReworkCost = Number.isFinite(goalReworkCostFromData) ? goalReworkCostFromData : DEFAULT_PERFORMANCE_GOALS.reworkCost;
+  const effectiveGoalReleaseRate = Number.isFinite(goalReleaseRateFromData) ? goalReleaseRateFromData : DEFAULT_PERFORMANCE_GOALS.releaseRate;
+  const effectiveGoalRootCauseAssignment = Number.isFinite(goalRootCauseAssignmentFromData) ? goalRootCauseAssignmentFromData : DEFAULT_PERFORMANCE_GOALS.rootCauseAssignment;
+
+  const populationFactor = calculatePopulationFactor(safeData, reworkData);
+  updatePerformanceGoalsNote(populationFactor, safeData.length, reworkData.length);
+
+  const adjustedGoalReworkCost = scaleGoalByPopulation(effectiveGoalReworkCost, populationFactor);
+  const adjustedGoalReleaseRate = scaleGoalByPopulation(effectiveGoalReleaseRate, populationFactor);
+  const adjustedGoalRootCauseAssignment = scaleGoalByPopulation(effectiveGoalRootCauseAssignment, populationFactor);
+
+  updatePerformanceTile('perfReworkCost', totalReworkCost, adjustedGoalReworkCost, 'lower', 'currency');
+  updatePerformanceTile('perfReleaseRate', releaseRate, adjustedGoalReleaseRate, 'lower', 'percent');
+  updatePerformanceTile('perfRootCauseAssignment', rootCauseAssignment, adjustedGoalRootCauseAssignment, 'higher', 'percent');
+}
+
+function updatePerformanceTile(tileIdPrefix, current, goal, direction, formatType = 'percent') {
+  const currentEl = document.getElementById(`${tileIdPrefix}Current`);
+  const goalEl = document.getElementById(`${tileIdPrefix}Goal`);
+  const statusEl = document.getElementById(`${tileIdPrefix}Status`);
+  if (!currentEl || !goalEl || !statusEl) return;
+
+  const normalizedGoal = formatType === 'percent' && Number.isFinite(goal)
+    ? Math.min(Math.max(goal, 0), 100)
+    : goal;
+
+  currentEl.textContent = formatPerformanceValue(current, formatType);
+  goalEl.textContent = formatPerformanceValue(normalizedGoal, formatType);
+
+  const status = getPerformanceStatus(current, normalizedGoal, direction);
+  statusEl.className = 'performance-status';
+  if (status.className) {
+    statusEl.classList.add(status.className);
+  }
+  statusEl.textContent = status.text;
 }
 
 // ---------- Metrics ----------
@@ -1013,6 +1466,256 @@ function setupDefectDriversSorting() {
       defectDriversSortMode = 'lag';
       renderDashboard();
     });
+  }
+}
+
+function setupAIInsights() {
+  const button = document.getElementById('generate-ai-insights-btn');
+  const refreshButton = document.getElementById('refresh-ai-health-btn');
+
+  if (refreshButton) {
+    refreshButton.addEventListener('click', () => {
+      checkAIBackendHealth(true);
+    });
+  }
+
+  checkAIBackendHealth(false);
+
+  if (!button) return;
+  button.addEventListener('click', generateAIInsights);
+}
+
+function setAIHealthStatus(state) {
+  const statusEl = document.getElementById('ai-health-status');
+  if (!statusEl) return;
+
+  statusEl.classList.remove('online', 'offline', 'checking');
+
+  if (state === 'online') {
+    statusEl.classList.add('online');
+    statusEl.textContent = 'Backend: Connected';
+    return;
+  }
+
+  if (state === 'checking') {
+    statusEl.classList.add('checking');
+    statusEl.textContent = 'Backend: Checking...';
+    return;
+  }
+
+  statusEl.classList.add('offline');
+  statusEl.textContent = 'Backend: Offline';
+}
+
+async function checkAIBackendHealth(showErrorMessage) {
+  setAIHealthStatus('checking');
+  try {
+    const response = await fetch(AI_HEALTH_ENDPOINT, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    if (!response.ok) {
+      throw new Error(`Health check failed with status ${response.status}`);
+    }
+    setAIHealthStatus('online');
+  } catch (error) {
+    setAIHealthStatus('offline');
+    if (showErrorMessage) {
+      const result = document.getElementById('ai-insights-result');
+      if (result) {
+        result.innerHTML = 'Backend is not reachable. Start the API at <strong>http://localhost:3001</strong> and refresh status.';
+      }
+    }
+  }
+}
+
+function buildAIContext(data) {
+  const safeData = Array.isArray(data) ? data : [];
+  const totalHoldUnits = safeData.reduce((sum, d) => sum + (parseInt(d.casesProduced) || 0), 0);
+  const totalItemsReworked = safeData.reduce((sum, d) => sum + (parseInt(d.casesReworked) || 0), 0);
+  const reworkPercent = totalHoldUnits > 0 ? (totalItemsReworked / totalHoldUnits) * 100 : 0;
+
+  let scrapUnits = 0;
+  const locationCounts = {};
+  const causeCounts = {};
+  const dispositionCounts = {};
+
+  safeData.forEach((d) => {
+    const disposition = String(d.disposition || 'Unknown').trim();
+    const dispositionKey = disposition || 'Unknown';
+    dispositionCounts[dispositionKey] = (dispositionCounts[dispositionKey] || 0) + 1;
+
+    const location = String(d.location || 'Unknown').trim() || 'Unknown';
+    locationCounts[location] = (locationCounts[location] || 0) + (parseInt(d.casesReworked) || 0);
+
+    const cause = String(d.rootCause || 'Unknown').trim() || 'Unknown';
+    causeCounts[cause] = (causeCounts[cause] || 0) + (parseInt(d.casesReworked) || 0);
+
+    const dispNormalized = disposition.toLowerCase();
+    if (dispNormalized.includes('scrap')) {
+      const produced = parseInt(d.casesProduced) || 0;
+      const reworked = parseInt(d.casesReworked) || 0;
+      scrapUnits += Math.max(produced - reworked, 0);
+    }
+  });
+
+  const topRootCause = Object.entries(causeCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
+  const topLocation = Object.entries(locationCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
+  const topDisposition = Object.entries(dispositionCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown';
+  const percentScrapped = totalHoldUnits > 0 ? (scrapUnits / totalHoldUnits) * 100 : 0;
+
+  return {
+    totalHoldUnits,
+    totalItemsReworked,
+    reworkPercent,
+    percentScrapped,
+    topRootCause,
+    topLocation,
+    topDisposition
+  };
+}
+
+function buildAISummaryText(data, metrics) {
+  const causeCounts = {};
+  data.forEach((d) => {
+    const cause = String(d.rootCause || 'Unknown').trim() || 'Unknown';
+    causeCounts[cause] = (causeCounts[cause] || 0) + (parseInt(d.casesReworked) || 0);
+  });
+
+  const topCauses = Object.entries(causeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([cause, count]) => `${cause}: ${Number(count).toLocaleString()} cases`)
+    .join('; ');
+
+  return [
+    `Records analyzed: ${data.length}.`,
+    `Total hold units: ${Number(metrics.totalHoldUnits).toLocaleString()}.`,
+    `Total items reworked: ${Number(metrics.totalItemsReworked).toLocaleString()}.`,
+    `Rework percent: ${Number(metrics.reworkPercent).toFixed(1)}%.`,
+    `Scrap percent: ${Number(metrics.percentScrapped).toFixed(1)}%.`,
+    `Top root cause: ${metrics.topRootCause}.`,
+    `Top location: ${metrics.topLocation}.`,
+    `Most common disposition: ${metrics.topDisposition}.`,
+    `Top cause breakdown: ${topCauses || 'N/A'}.`
+  ].join(' ');
+}
+
+function renderAIInsights(resultElement, insights, keyPhrases) {
+  const safeInsights = (Array.isArray(insights) ? insights : []).slice(0, 3);
+  if (safeInsights.length === 0) {
+    resultElement.textContent = 'No actionable insights were returned.';
+    return;
+  }
+
+  const insightsList = safeInsights
+    .map((line) => `<li>${String(line)}</li>`)
+    .join('');
+
+  const phraseText = Array.isArray(keyPhrases) && keyPhrases.length > 0
+    ? `<div class="ai-insights-meta"><strong>Key Themes:</strong> ${keyPhrases.map((k) => String(k)).join(', ')}</div>`
+    : '';
+
+  resultElement.innerHTML = `${phraseText}<ol class="ai-insights-list">${insightsList}</ol>`;
+}
+
+function buildLocalInsights(data, metrics) {
+  const insights = [];
+  const safeData = Array.isArray(data) ? data : [];
+  const reworkPercent = Number(metrics.reworkPercent || 0);
+  const scrapPercent = Number(metrics.percentScrapped || 0);
+  const topCause = String(metrics.topRootCause || 'Unknown');
+  const topLocation = String(metrics.topLocation || 'Unknown');
+  const totalReworked = Number(metrics.totalItemsReworked || 0);
+  const totalHold = Number(metrics.totalHoldUnits || 0);
+
+  if (reworkPercent >= 5) {
+    insights.push(`Rework is high at ${reworkPercent.toFixed(1)}%. Launch immediate containment at ${topLocation} focused on ${topCause}.`);
+  } else if (reworkPercent >= 3) {
+    insights.push(`Rework is elevated at ${reworkPercent.toFixed(1)}%. Increase first-pass checks on lines with recurring ${topCause}.`);
+  } else {
+    insights.push(`Rework is stable at ${reworkPercent.toFixed(1)}%. Maintain controls and watch for drift in ${topCause}.`);
+  }
+
+  if (scrapPercent >= 2) {
+    insights.push(`Scrap is ${scrapPercent.toFixed(1)}%. Add pre-release quality verification to reduce irreversible losses.`);
+  }
+
+  insights.push(`Top driver is ${topCause}. Assign an owner to verify root cause and close corrective actions this week.`);
+
+  if (totalHold > 0) {
+    insights.push(`Volume context: ${totalReworked.toLocaleString()} reworked of ${totalHold.toLocaleString()} hold units.`);
+  }
+
+  const causeCounts = {};
+  safeData.forEach((d) => {
+    const cause = String(d.rootCause || 'Unknown').trim() || 'Unknown';
+    causeCounts[cause] = (causeCounts[cause] || 0) + (parseInt(d.casesReworked) || 0);
+  });
+
+  const topCauses = Object.entries(causeCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([cause, count]) => `${cause} (${Number(count).toLocaleString()} cases)`);
+
+  if (topCauses.length > 0) {
+    insights.push(`Top contributors: ${topCauses.join(', ')}.`);
+  }
+
+  return insights.slice(0, 3);
+}
+
+async function generateAIInsights() {
+  const button = document.getElementById('generate-ai-insights-btn');
+  const result = document.getElementById('ai-insights-result');
+  if (!button || !result) return;
+
+  if (!Array.isArray(reworkData) || reworkData.length === 0) {
+    result.textContent = 'Load CSV data first, then generate insights.';
+    return;
+  }
+
+  const active = getFilteredData();
+  if (active.length === 0) {
+    result.textContent = 'No records match your current filters.';
+    return;
+  }
+
+  const metrics = buildAIContext(active);
+  const summaryText = buildAISummaryText(active, metrics);
+
+  button.disabled = true;
+  const originalLabel = button.textContent;
+  button.textContent = 'Generating...';
+  result.textContent = 'Generating AI insights...';
+
+  try {
+    const response = await fetch(AI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        summaryText,
+        metrics
+      })
+    });
+
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(errorPayload.error || `Request failed with status ${response.status}`);
+    }
+
+    const payload = await response.json();
+    renderAIInsights(result, payload.insights, payload.keyPhrases);
+    setAIHealthStatus('online');
+  } catch (error) {
+    console.error('AI insights request failed:', error);
+    setAIHealthStatus('offline');
+    const localInsights = buildLocalInsights(active, metrics);
+    const localInsightsList = localInsights.map((line) => `<li>${String(line)}</li>`).join('');
+    result.innerHTML = `<div class="ai-insights-meta"><strong>Running in Local Mode:</strong> Backend is unavailable, so these recommendations are generated directly in the dashboard.</div><ol class="ai-insights-list">${localInsightsList}</ol>`;
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
   }
 }
 
