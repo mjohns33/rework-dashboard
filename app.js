@@ -22,8 +22,74 @@ document.addEventListener('DOMContentLoaded', () => {
   hookUpDateEvents();
   setupDefectDriversSorting();
   setupAIInsights();
+  autoLoadCSV();
   renderDashboard();
 });
+
+// Auto-load CSV file
+function autoLoadCSV() {
+  fetch('./NVA Data for Dashboard.csv')
+    .then(response => {
+      if (!response.ok) {
+        throw new Error('CSV file not found');
+      }
+      return response.text();
+    })
+    .then(csvText => {
+      showMessage('Loading NVA rework data...', 'info');
+      try {
+        const data = parseCSV(csvText);
+        if (data.length === 0) {
+          showMessage('CSV file is empty or invalid format', 'error');
+          return;
+        }
+        reworkData = data;
+        saveData();
+        populateLocationFilter();
+        renderDashboard();
+        showMessage(`✓ Successfully loaded ${data.length} records from NVA Data for Dashboard.csv`, 'success');
+      } catch (parseError) {
+        console.error('Parse error:', parseError);
+        showMessage(`Error parsing CSV: ${parseError.message}`, 'error');
+      }
+    })
+    .catch(error => {
+      console.warn('Auto-load failed:', error);
+      showMessage('NVA Data for Dashboard.csv not found. Please upload a CSV file manually.', 'error');
+    });
+}
+
+// Categorize root causes into Material, Machine, Procedure
+function categorizeRootCause(rootCause) {
+  const cause = String(rootCause || '').toLowerCase().trim();
+  
+  // Material-related issues
+  if (cause.includes('glass') || cause.includes('bottle') || cause.includes('label') || 
+      cause.includes('closure') || cause.includes('cap') || cause.includes('cork') || 
+      cause.includes('leaker') || cause.includes('packaging') || cause.includes('case') ||
+      cause.includes('foreign object') || cause.includes('liquid') || cause.includes('compliance')) {
+    return 'Material';
+  }
+  
+  // Machine-related issues  
+  if (cause.includes('machine') || cause.includes('equipment') || cause.includes('line') ||
+      cause.includes('mechanical') || cause.includes('automation') || cause.includes('conveyor') ||
+      cause.includes('filling') || cause.includes('capping') || cause.includes('labeling')) {
+    return 'Machine';
+  }
+  
+  // Procedure-related issues
+  if (cause.includes('process') || cause.includes('procedure') || cause.includes('haccp') ||
+      cause.includes('inspection') || cause.includes('inverting') || cause.includes('mgmt') ||
+      cause.includes('other') || cause.includes('identification') || cause.includes('vacuum') ||
+      cause.includes('expiration') || cause.includes('upc') || cause.includes('missing') ||
+      cause.includes('sticker') || cause.includes('wrong') || cause.includes('incorrect')) {
+    return 'Procedure';
+  }
+  
+  // Default to Procedure for unknown causes
+  return 'Procedure';
+}
 
 // ---------- File Load ----------
 function loadCSV() {
@@ -826,7 +892,6 @@ function renderEmptyState() {
   renderPerformanceGoals([]);
   document.getElementById('totalItems').textContent = '0';
   document.getElementById('reworkPercent').textContent = '0%';
-  document.getElementById('topCause').textContent = '—';
   const daysTrackedField = document.getElementById('daysTracked');
   if (daysTrackedField) {
     daysTrackedField.textContent = '0';
@@ -1082,7 +1147,6 @@ function calculateMetrics(data) {
   document.getElementById('totalItems').textContent = totalItems.toLocaleString(); // casesReworked
   document.getElementById('percentReleased').textContent = percentReleased !== 'N/A' ? `${percentReleased}%` : 'N/A';
   document.getElementById('reworkPercent').textContent = totalHoldUnits > 0 ? `${reworkPercent}%` : 'N/A';
-  document.getElementById('topCause').textContent = (topCause || '—').substring(0, 25);
   const daysTrackedField = document.getElementById('daysTracked');
   if (daysTrackedField) {
     daysTrackedField.textContent = uniqueDates.toLocaleString();
@@ -1124,11 +1188,16 @@ function calculateMetrics(data) {
 
 // ---------- Charts ----------
 function renderCharts(data) {
-  renderDispositionDonut(data);
-  renderTimeCostBar(data);
-  renderRootCauseDonut(data);
-  renderDefectParetoBar(data);
-  renderDefectDriversTable(data);
+  console.log('renderCharts called with data length:', data.length);
+  try {
+    renderDispositionDonut(data);
+    renderTimeCostBar(data);
+    renderLevel1RootCauseChart(data);
+    renderLevel2RootCauseChart(data, 'Material');
+    renderDefectDriversTable(data);
+  } catch (error) {
+    console.error('Error rendering charts:', error);
+  }
 }
 
 // Disposition Mix Donut Chart
@@ -1335,20 +1404,106 @@ function renderRootCauseDonut(data) {
   });
 }
 
-// Pareto Bar Chart of Top Defect Drivers
+// Root Cause Breakdown Donut Chart (fallback)
+function renderRootCauseDonut(data) {
+  renderLevel2RootCauseChart(data, null);
+}
+
+// Pareto Bar Chart (fallback)
 function renderDefectParetoBar(data) {
+  renderLevel1RootCauseChart(data);
+}
+
+// Level 1 Root Cause Breakdown (Material/Machine/Procedure) - Donut Chart
+function renderLevel1RootCauseChart(data) {
   const ctx = document.getElementById('defectParetoBar');
-  if (!ctx) return;
-  const counts = {};
-  data.forEach(d => {
-    const driver = d.rootCause || 'Unknown';
-    counts[driver] = (counts[driver] || 0) + (d.casesReworked || 0);
+  if (!ctx) {
+    console.error('defectParetoBar canvas not found');
+    return;
+  }
+  
+  console.log('renderLevel1RootCauseChart called with data:', data.length);
+  
+  const level1Counts = { Material: 0, Machine: 0, Procedure: 0 };
+  data.forEach((d) => {
+    const category = categorizeRootCause(d.rootCause);
+    level1Counts[category] += (d.casesReworked || 0);
   });
-  const sorted = Object.entries(counts).sort((a,b) => b[1]-a[1]).slice(0,10);
-  const labels = sorted.map(([k]) => k);
-  const values = sorted.map(([_,v]) => v);
-  if (window.defectParetoBarChart) window.defectParetoBarChart.destroy();
-  window.defectParetoBarChart = new Chart(ctx, {
+
+  console.log('Level 1 counts:', level1Counts);
+  
+  const labels = Object.keys(level1Counts);
+  const values = Object.values(level1Counts);
+  
+  if (window.level1RootCauseChart) {
+    window.level1RootCauseChart.destroy();
+  }
+  
+  window.level1RootCauseChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: ['#b21f2d', '#b39b73', '#7f1320'],
+        radius: '82%',
+        cutout: '60%'
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: true,
+      aspectRatio: 1.45,
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: { boxWidth: 12, font: { size: 11 } }
+        },
+        tooltip: {
+          callbacks: {
+            label: (context) => `${context.label}: ${Number(context.raw || 0).toLocaleString()} cases`
+          }
+        }
+      },
+      onClick: (event, elements) => {
+        if (elements.length > 0) {
+          const index = elements[0].index;
+          const selectedCategory = labels[index];
+          renderLevel2RootCauseChart(data, selectedCategory);
+        }
+      }
+    },
+  });
+}
+
+// Level 2 Root Cause Breakdown (All detailed causes) - Pareto Bar
+function renderLevel2RootCauseChart(data, category = null) {
+  const ctx = document.getElementById('rootCauseDonut');
+  if (!ctx) {
+    console.error('rootCauseDonut canvas not found');
+    return;
+  }
+  
+  console.log('renderLevel2RootCauseChart called for category:', category);
+  
+  // Show all root causes from the data source, not filtered by category
+  const counts = {};
+  data.forEach((d) => {
+    const cause = d.rootCause || 'Unknown';
+    counts[cause] = (counts[cause] || 0) + (d.casesReworked || 0);
+  });
+
+  console.log('Level 2 counts (all causes):', counts);
+  
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const labels = sorted.map(([cause]) => cause);
+  const values = sorted.map(([, value]) => value);
+
+  if (window.level2RootCauseChart) {
+    window.level2RootCauseChart.destroy();
+  }
+  
+  window.level2RootCauseChart = new Chart(ctx, {
     type: 'bar',
     data: {
       labels,
@@ -1366,6 +1521,11 @@ function renderDefectParetoBar(data) {
           callbacks: {
             label: (context) => `Cases Reworked: ${Number(context.raw || 0).toLocaleString()} cases`
           }
+        },
+        title: {
+          display: true,
+          text: category ? `${category} - Detailed Breakdown` : 'All Root Causes - Detailed Breakdown',
+          font: { size: 14, weight: 'bold' }
         }
       },
       indexAxis: 'y',
