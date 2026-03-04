@@ -22,31 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   hookUpDateEvents();
   setupDefectDriversSorting();
   setupAIInsights();
-  autoLoadCSV();
+  renderDashboard();
 });
-
-// ---------- Auto Load CSV ----------
-async function autoLoadCSV() {
-  try {
-    const response = await fetch('NVA Data for Dashboard.csv');
-    if (!response.ok) throw new Error('CSV file not found');
-    const csvText = await response.text();
-    showMessage('Loading data...', 'info');
-    const data = parseCSV(csvText);
-    if (data.length === 0) {
-      showMessage('CSV file is empty', 'error');
-      return;
-    }
-    reworkData = data;
-    saveData();
-    populateLocationFilter();
-    renderDashboard();
-    showMessage(`✓ Successfully loaded ${data.length} records`, 'success');
-  } catch (error) {
-    showMessage(`Error loading data: ${error.message}`, 'error');
-    renderDashboard();
-  }
-}
 
 // ---------- File Load ----------
 function loadCSV() {
@@ -478,7 +455,6 @@ function parseCSV(csv) {
   const reworkPercentCol = getColIndex(['rework %', 'rework percent', 'percentage', 'percent']);
   const costImpactCol = header.findIndex(h => normalize(h).includes('costimpact'));
   const reworkLagCol = header.findIndex(h => normalize(h).includes('reworklag'));
-  const subCatCol = header.findIndex(h => normalize(h) === 'subcat');
   const goalReworkCostCol = getColIndex(['rework cost', 'goal rework cost', 'target rework cost']);
   const goalReleaseRateCol = getColIndex(['release rate', 'goal release rate', 'target release rate']);
   const goalRootCauseAssignmentCol = getColIndex(['root cause assignment', 'goal root cause assignment', 'target root cause assignment']);
@@ -579,8 +555,7 @@ function parseCSV(csv) {
       costScrap: costScrap,
       goalReworkCost,
       goalReleaseRate,
-      goalRootCauseAssignment,
-      subCat: subCatCol !== -1 ? row[subCatCol] : undefined
+      goalRootCauseAssignment
       // Removed per-row reworkPercent for clarity in overall metric
     });
   }
@@ -937,12 +912,12 @@ function updatePerformanceGoalsNote(populationFactor, filteredCount, fullCount) 
   if (!noteEl) return;
 
   if (!Number.isFinite(populationFactor) || fullCount === 0) {
-    noteEl.textContent = 'Targets scaled to 100.0% of total population.';
+    noteEl.textContent = 'Goals scaled to 100.0% of total population.';
     return;
   }
 
   const pct = (populationFactor * 100).toFixed(1);
-  noteEl.textContent = `Targets scaled to ${pct}% of total population (${filteredCount.toLocaleString()} of ${fullCount.toLocaleString()} records).`;
+  noteEl.textContent = `Goals scaled to ${pct}% of total population (${filteredCount.toLocaleString()} of ${fullCount.toLocaleString()} records).`;
 }
 
 function scaleGoalByPopulation(goalValue, populationFactor) {
@@ -1151,8 +1126,8 @@ function calculateMetrics(data) {
 function renderCharts(data) {
   renderDispositionDonut(data);
   renderTimeCostBar(data);
-  renderRootCauseLevel1(data);
-  renderRootCauseLevel2(data);
+  renderRootCauseDonut(data);
+  renderDefectParetoBar(data);
   renderDefectDriversTable(data);
 }
 
@@ -1302,131 +1277,6 @@ function renderTimeCostBar(data) {
           beginAtZero: true,
           title: { display: true, text: 'Cost Impact ($)' }
         }
-      }
-    },
-  });
-}
-
-// Root Cause Level 1 - Category Breakdown
-// Maps SubCat values to Level 1 categories (Material, Machine, Procedure)
-function categorizeRootCause(row) {
-  // First try to use SubCat if available
-  const subCat = String(row.subCat || row.SubCat || '').toLowerCase().trim();
-  
-  // Material-related subcategories
-  if (subCat.includes('label') || subCat.includes('closure') || subCat.includes('glass') || 
-      subCat.includes('case') || subCat.includes('liquid') || subCat.includes('compliance') ||
-      subCat.includes('identification')) {
-    return 'Material';
-  }
-  
-  // Machine-related subcategories
-  if (subCat.includes('process') || subCat.includes('other')) {
-    return 'Machine';
-  }
-  
-  // If SubCat not available, fall back to Root Cause keyword matching
-  const cause = String(row.rootCause || '').toLowerCase();
-  if (cause.includes('material') || cause.includes('ingredient') || cause.includes('supply') || cause.includes('raw') ||
-      cause.includes('label') || cause.includes('closure') || cause.includes('glass') || cause.includes('liquid')) {
-    return 'Material';
-  }
-  if (cause.includes('machine') || cause.includes('equipment') || cause.includes('line') || cause.includes('mechanical')) {
-    return 'Machine';
-  }
-  if (cause.includes('procedure') || cause.includes('process') || cause.includes('method') || cause.includes('sop') || cause.includes('training')) {
-    return 'Procedure';
-  }
-  
-  return 'Procedure'; // Default to Procedure for process-related issues
-}
-
-function renderRootCauseLevel1(data) {
-  const ctx = document.getElementById('rootCauseLevel1Bar');
-  if (!ctx) return;
-  
-  const categoryCounts = {};
-  data.forEach((d) => {
-    const category = categorizeRootCause(d);
-    categoryCounts[category] = (categoryCounts[category] || 0) + (d.casesReworked || 0);
-  });
-  
-  const sorted = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]);
-  const labels = sorted.map(([k]) => k);
-  const values = sorted.map(([_, v]) => v);
-  
-  if (window.rootCauseLevel1Chart) window.rootCauseLevel1Chart.destroy();
-  window.rootCauseLevel1Chart = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels,
-      datasets: [{
-        data: values,
-        backgroundColor: ['#b21f2d', '#b39b73', '#7f1320'],
-        radius: '84%',
-        cutout: '58%'
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: true,
-      aspectRatio: 1.45,
-      plugins: {
-        legend: { position: 'bottom' },
-        tooltip: {
-          callbacks: {
-            label: (context) => `${context.label}: ${Number(context.raw || 0).toLocaleString()} cases`
-          }
-        }
-      }
-    },
-  });
-}
-
-// Root Cause Level 2 - Specific Drivers
-function renderRootCauseLevel2(data) {
-  const ctx = document.getElementById('rootCauseLevel2Bar');
-  if (!ctx) return;
-  
-  const counts = {};
-  data.forEach(d => {
-    const driver = d.rootCause || 'Unknown';
-    counts[driver] = (counts[driver] || 0) + (d.casesReworked || 0);
-  });
-  
-  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
-  const labels = sorted.map(([k]) => k);
-  const values = sorted.map(([_, v]) => v);
-  
-  if (window.rootCauseLevel2Chart) window.rootCauseLevel2Chart.destroy();
-  window.rootCauseLevel2Chart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [{
-        label: 'Cases Reworked',
-        data: values,
-        backgroundColor: '#b39b73',
-      }],
-    },
-    options: {
-      responsive: true,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: (context) => `Cases Reworked: ${Number(context.raw || 0).toLocaleString()}`
-          }
-        }
-      },
-      indexAxis: 'y',
-      scales: {
-        x: {
-          beginAtZero: true,
-          title: { display: true, text: 'Cases Reworked' },
-          ticks: { callback: (value) => Number(value).toLocaleString() }
-        },
-        y: { title: { display: true, text: 'Root Cause Driver' } }
       }
     },
   });

@@ -80,38 +80,20 @@
     body { 
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
       background: var(--color-bg); 
-      padding: 0;
+      padding: 20px;
       color: var(--color-text);
     }
-    .container { max-width: 100%; margin: 0; padding: 0 20px; }
-    .container > *:not(header) { max-width: 1400px; margin-left: auto; margin-right: auto; }
+    .container { max-width: 1400px; margin: 0 auto; }
     header { 
-      background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+      background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
       color: white; 
-      padding: 16px 0; 
-      border-radius: 0;
-      margin: 0 0 30px 0;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-      display: flex;
-      align-items: center;
-      gap: 24px;
-      width: 100%;
+      padding: 30px 20px; 
+      border-radius: 8px;
+      margin-bottom: 30px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    header .logo-container {
-      flex-shrink: 0;
-      padding-left: 24px;
-    }
-    header .logo-container img {
-      height: 32px;
-      width: auto;
-      max-width: 200px;
-      display: block;
-    }
-    header .header-text {
-      flex: 1;
-    }
-    header h1 { font-size: 26px; margin-bottom: 4px; font-weight: 600; letter-spacing: -0.5px; }
-    header p { font-size: 14px; opacity: 0.95; font-weight: 400; }
+    header h1 { font-size: 28px; margin-bottom: 5px; }
+    header p { font-size: 14px; opacity: 0.9; }
     
     .controls { 
       background: var(--color-surface); 
@@ -159,45 +141,7 @@
       align-items: flex-start;
       justify-content: center;
       word-break: break-word;
-      transition: all 0.3s ease;
-      cursor: pointer;
-      position: relative;
-    }
-    .metric-card:hover {
-      box-shadow: 0 8px 20px rgba(178,31,45,0.25);
-      transform: translateY(-4px);
-      border-left-width: 6px;
-    }
-    .metric-card:hover::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      background: white;
-      color: var(--color-primary);
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
-      white-space: normal;
-      width: max-content;
-      max-width: 250px;
-      z-index: 1000;
-      margin-bottom: 10px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      border: 2px solid var(--color-primary);
-      line-height: 1.4;
-    }
-    .metric-card:hover::before {
-      content: '';
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      border: 8px solid transparent;
-      border-top-color: var(--color-primary);
-      margin-bottom: 2px;
+      transition: box-shadow 0.2s;
     }
     .metric-label { font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600; }
     .metric-value { font-size: 18px; font-weight: 700; color: var(--color-primary); margin-top: 4px; }
@@ -261,41 +205,6 @@
     }
     table thead { background: #efe8da; }
     table th { padding: 12px; text-align: left; font-weight: 600; color: #5c4e37; border-bottom: 2px solid var(--color-accent); }
-    table th[data-tooltip] {
-      position: relative;
-      cursor: pointer;
-    }
-    table th[data-tooltip]:hover::after {
-      content: attr(data-tooltip);
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      background: white;
-      color: var(--color-primary);
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      font-weight: 500;
-      white-space: normal;
-      width: max-content;
-      max-width: 250px;
-      z-index: 1000;
-      margin-bottom: 10px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      border: 2px solid var(--color-primary);
-      line-height: 1.4;
-    }
-    table th[data-tooltip]:hover::before {
-      content: '';
-      position: absolute;
-      bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
-      border: 8px solid transparent;
-      border-top-color: var(--color-primary);
-      margin-bottom: 2px;
-    }
     table td { padding: 12px; border-bottom: 1px solid #e5e7eb; }
     table tbody tr:hover { background: #f7f4ed; }
     
@@ -638,16 +547,18 @@
   </style>
 </head>
 <body>
-  <header>
-    <div class="logo-container">
-      <img src="Gallo_PrimaryLogo_ChiseledCream_Print.png" alt="Gallo Logo">
-    </div>
-    <div class="header-text">
+  <div class="container">
+    <header>
       <h1>Non-Value Add Rework Dashboard</h1>
       <p>Operations Team - Month-to-Date Tracking</p>
+    </header>
+
+    <div class="controls">
+      <input type="file" id="csvFile" accept=".csv,.xlsx,.xls" placeholder="Upload rework data (CSV/Excel)">
+      <button id="loadBtn" onclick="loadCSV()"><span class="loader" id="loadingSpinner"></span>Load CSV Data</button>
+      <button onclick="clearData()" style="background: #b39b73; color: #2f2a22;">Clear Data</button>
+      <span id="dataInfo" style="color: #666; font-size: 14px;"></span>
     </div>
-  </header>
-  <div class="container">
 
     <div id="message"></div>
     
@@ -672,25 +583,25 @@
     </div>
     <p id="dateRangeDisplay" style="margin-bottom: 20px; font-size: 14px; color: #666; font-weight: 600;"></p>
 
-    <h2 class="performance-goals-title">Current Performance vs Targets</h2>
-    <p class="performance-goals-note" id="performanceGoalsNote">Targets scaled to 100.0% of total population.</p>
+    <h2 class="performance-goals-title">Current Performance vs Goals</h2>
+    <p class="performance-goals-note" id="performanceGoalsNote">Goals scaled to 100.0% of total population.</p>
     <section class="performance-goals-row" id="performanceGoalsRow">
       <article class="performance-tile">
         <div class="performance-title">Rework Cost</div>
         <div class="performance-current" id="perfReworkCostCurrent">$0</div>
-        <div class="performance-goal">Target: <strong id="perfReworkCostGoal">$7,000,000</strong></div>
+        <div class="performance-goal">Goal: <strong id="perfReworkCostGoal">$7,000,000</strong></div>
         <div class="performance-status" id="perfReworkCostStatus">N/A</div>
       </article>
       <article class="performance-tile">
         <div class="performance-title">Release Rate</div>
         <div class="performance-current" id="perfReleaseRateCurrent">0.0%</div>
-        <div class="performance-goal">Target: <strong id="perfReleaseRateGoal">40.0%</strong></div>
+        <div class="performance-goal">Goal: <strong id="perfReleaseRateGoal">40.0%</strong></div>
         <div class="performance-status" id="perfReleaseRateStatus">N/A</div>
       </article>
       <article class="performance-tile">
         <div class="performance-title">Root Cause Assignment</div>
         <div class="performance-current" id="perfRootCauseAssignmentCurrent">0.0%</div>
-        <div class="performance-goal">Target: <strong id="perfRootCauseAssignmentGoal">90.0%</strong></div>
+        <div class="performance-goal">Goal: <strong id="perfRootCauseAssignmentGoal">90.0%</strong></div>
         <div class="performance-status" id="perfRootCauseAssignmentStatus">N/A</div>
       </article>
     </section>
@@ -710,35 +621,35 @@
 
     <div class="metrics" id="metrics">
       <!-- BEGIN: Required metric elements for dashboard JS -->
-      <div class="metric-card" data-tooltip="Total number of cases that were placed on hold for quality review">
+      <div class="metric-card">
         <div class="metric-label">Total Hold Units</div>
         <div class="metric-value" id="totalHoldUnits">0</div>
       </div>
-      <div class="metric-card" data-tooltip="Total number of cases that required rework to meet quality standards">
-        <div class="metric-label">Total Items Reworked</div>
-        <div class="metric-value" id="totalItems">0</div>
-      </div>
-      <div class="metric-card" data-tooltip="Percentage of hold units that were released back to inventory after review">
+      <div class="metric-card">
         <div class="metric-label">% Released</div>
         <div class="metric-value" id="percentReleased">0%</div>
       </div>
-      <div class="metric-card" data-tooltip="Percentage of hold units that were scrapped and cannot be recovered">
+      <div class="metric-card">
         <div class="metric-label">% Scrapped</div>
         <div class="metric-value" id="percentScrapped">0%</div>
       </div>
-      <div class="metric-card" data-tooltip="Percentage of hold units that required rework (Total Items Reworked / Total Hold Units)">
-        <div class="metric-label">% Reworked</div>
-        <div class="metric-value" id="reworkPercent">0%</div>
-      </div>
-      <div class="metric-card" data-tooltip="Total dollar value of scrapped units that cannot be recovered">
+      <div class="metric-card">
         <div class="metric-label">Cost of Scrap</div>
         <div class="metric-value" id="costScrap">$0</div>
       </div>
-      <div class="metric-card" data-tooltip="Total dollar value of labor and materials spent on rework activities">
+      <div class="metric-card">
+        <div class="metric-label">Total Items Reworked</div>
+        <div class="metric-value" id="totalItems">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">% Reworked</div>
+        <div class="metric-value" id="reworkPercent">0%</div>
+      </div>
+      <div class="metric-card">
         <div class="metric-label">Cost of Rework</div>
         <div class="metric-value" id="costRework">$0</div>
       </div>
-      <div class="metric-card" data-tooltip="Most frequently occurring root cause driving rework volume">
+      <div class="metric-card">
         <div class="metric-label">Top Root Cause</div>
         <div class="metric-value" id="topCause">—</div>
       </div>
@@ -765,12 +676,12 @@
 
     <div class="charts-grid second-row" style="margin-top: 32px;">
       <div class="chart-container">
-        <h3>Root Cause Category (Level 1)</h3>
-        <canvas id="rootCauseLevel1Bar"></canvas>
+        <h3>Pareto of Top Defect Drivers</h3>
+        <canvas id="defectParetoBar"></canvas>
       </div>
       <div class="chart-container">
-        <h3>Root Cause Drivers (Level 2)</h3>
-        <canvas id="rootCauseLevel2Bar"></canvas>
+        <h3>Root Cause Breakdown</h3>
+        <canvas id="rootCauseDonut"></canvas>
       </div>
       <div class="chart-container full-width-tile">
         <h3>Top Defect Drivers</h3>
@@ -783,7 +694,7 @@
               <th>Root Cause</th>
               <th>Disposition</th>
               <th style="cursor: pointer;" id="costHeader" title="Click to sort by cost">Cost Impact <span id="costSortIcon"></span></th>
-              <th style="cursor: pointer; position: relative;" id="lagHeader" title="Click to sort by rework lag" data-tooltip="Time elapsed from when hold was placed to when rework was executed">Rework Lag (Days) <span id="lagSortIcon"></span></th>
+              <th style="cursor: pointer;" id="lagHeader" title="Click to sort by rework lag">Rework Lag (Days) <span id="lagSortIcon"></span></th>
             </tr>
           </thead>
           <tbody>
