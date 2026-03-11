@@ -83,7 +83,7 @@
       padding: 20px;
       color: var(--color-text);
     }
-    .container { max-width: 1400px; margin: 0 auto; }
+    .container { max-width: 100%; margin: 0 auto; padding: 0 20px; }
     header { 
       background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
       color: white; 
@@ -213,7 +213,7 @@
       margin-bottom: 30px;
     }
     .charts-grid.top-row {
-      grid-template-columns: minmax(320px, 0.85fr) minmax(620px, 1.35fr);
+      grid-template-columns: 1fr 2fr;
       align-items: stretch;
     }
     @media (max-width: 1200px) {
@@ -222,7 +222,7 @@
       }
     }
     .charts-grid.second-row {
-      grid-template-columns: minmax(460px, 0.75fr) minmax(560px, 1.25fr);
+      grid-template-columns: 1fr 1fr;
       align-items: stretch;
     }
     .charts-grid.second-row .full-width-tile {
@@ -378,10 +378,42 @@
       border-radius: 10px;
       padding: 14px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-      min-height: 118px;
+      min-height: 140px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
+    }
+    .performance-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .performance-trend {
+      font-size: 20px;
+      line-height: 1;
+    }
+    .trend-up { color: #16a34a; }
+    .trend-down { color: #dc2626; }
+    .trend-stable { color: #666; }
+    .performance-progress-bar {
+      width: 100%;
+      height: 6px;
+      background: #e5e7eb;
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 8px 0;
+    }
+    .performance-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+      transition: width 0.5s ease;
+      border-radius: 3px;
+    }
+    .performance-progress-text {
+      font-size: 11px;
+      color: var(--color-muted);
+      font-weight: 600;
+      margin-bottom: 4px;
     }
     .performance-title {
       font-size: 12px;
@@ -464,14 +496,16 @@
       box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
     .ai-insights-panel h2 {
-      font-size: 18px;
+      font-size: 20px;
       color: var(--color-primary);
-      margin-bottom: 8px;
+      margin-bottom: 4px;
+      font-weight: 700;
     }
-    .ai-insights-panel p {
+    .ai-insights-panel .subtitle {
       color: var(--color-muted);
-      margin-bottom: 12px;
-      font-size: 14px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      font-weight: 600;
     }
     .ai-insights-header {
       display: flex;
@@ -570,33 +604,124 @@
     }
     .ai-insights-list li {
       counter-increment: aiStep;
-      background: var(--color-surface);
+      background: linear-gradient(135deg, #fffbf5 0%, #fff8ef 100%);
       border: 1px solid var(--color-border);
-      border-left: 4px solid var(--color-primary);
-      border-radius: 8px;
-      padding: 10px 12px 10px 44px;
+      border-left: 5px solid var(--color-primary);
+      border-radius: 10px;
+      padding: 14px 16px 14px 52px;
       position: relative;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.04);
+      box-shadow: 0 3px 8px rgba(178,31,45,0.08);
       color: var(--color-text);
       font-size: 15px;
-      line-height: 1.45;
+      line-height: 1.6;
+      font-weight: 500;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .ai-insights-list li:hover {
+      transform: translateX(4px);
+      box-shadow: 0 4px 12px rgba(178,31,45,0.12);
     }
     .ai-insights-list li::before {
       content: counter(aiStep);
       position: absolute;
-      left: 12px;
+      left: 14px;
       top: 50%;
       transform: translateY(-50%);
-      width: 22px;
-      height: 22px;
+      width: 26px;
+      height: 26px;
       border-radius: 999px;
-      background: var(--color-primary);
+      background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
       color: white;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      font-size: 12px;
+      font-size: 13px;
+      font-weight: 800;
+      box-shadow: 0 2px 6px rgba(178,31,45,0.3);
+    }
+    
+    /* Work Order Detail Modal */
+    .wo-modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.5);
+      animation: fadeIn 0.2s;
+    }
+    .wo-modal-content {
+      background-color: var(--color-surface);
+      margin: 5% auto;
+      padding: 30px;
+      border: 1px solid var(--color-border);
+      border-radius: 12px;
+      width: 90%;
+      max-width: 600px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+      animation: slideDown 0.3s;
+    }
+    .wo-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid var(--color-primary);
+    }
+    .wo-modal-header h2 {
+      color: var(--color-primary);
+      font-size: 22px;
+      margin: 0;
+    }
+    .wo-modal-close {
+      color: var(--color-muted);
+      font-size: 32px;
+      font-weight: bold;
+      cursor: pointer;
+      line-height: 1;
+      transition: color 0.2s;
+    }
+    .wo-modal-close:hover {
+      color: var(--color-primary);
+    }
+    .wo-detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin-top: 20px;
+    }
+    .wo-detail-item {
+      padding: 12px;
+      background: var(--color-bg);
+      border-radius: 6px;
+      border-left: 3px solid var(--color-accent);
+    }
+    .wo-detail-item.full-width {
+      grid-column: 1 / -1;
+    }
+    .wo-detail-label {
+      font-size: 11px;
       font-weight: 700;
+      color: var(--color-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .wo-detail-value {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--color-text);
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    @keyframes slideDown {
+      from { transform: translateY(-50px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
     }
   </style>
 </head>
@@ -610,8 +735,10 @@
       </div>
     </header>
 
-    <div class="controls">
-      <button onclick="clearData()" style="background: #b39b73; color: #2f2a22;">Clear Data</button>
+    <div class="controls" style="display: none;">
+      <input type="file" id="csvFile" accept=".csv,.xlsx,.xls">
+      <button id="loadBtn" onclick="loadCSV()">Load Data</button>
+      <span class="loader" id="loadingSpinner"></span>
       <span id="dataInfo" style="color: #666; font-size: 14px;"></span>
     </div>
 
@@ -642,21 +769,42 @@
     <p class="performance-goals-note" id="performanceGoalsNote">Targets scaled to 100.0% of total population.</p>
     <section class="performance-goals-row" id="performanceGoalsRow">
       <article class="performance-tile">
-        <div class="performance-title">Rework Cost</div>
+        <div class="performance-header">
+          <div class="performance-title">Rework Cost</div>
+          <div class="performance-trend" id="perfReworkCostTrend"></div>
+        </div>
         <div class="performance-current" id="perfReworkCostCurrent">$0</div>
         <div class="performance-goal">Target: <strong id="perfReworkCostGoal">$7,000,000</strong></div>
+        <div class="performance-progress-text" id="perfReworkCostProgress">0% to target</div>
+        <div class="performance-progress-bar">
+          <div class="performance-progress-fill" id="perfReworkCostProgressBar" style="width: 0%"></div>
+        </div>
         <div class="performance-status" id="perfReworkCostStatus">N/A</div>
       </article>
       <article class="performance-tile">
-        <div class="performance-title">Release Rate</div>
+        <div class="performance-header">
+          <div class="performance-title">Release Rate</div>
+          <div class="performance-trend" id="perfReleaseRateTrend"></div>
+        </div>
         <div class="performance-current" id="perfReleaseRateCurrent">0.0%</div>
         <div class="performance-goal">Target: <strong id="perfReleaseRateGoal">40.0%</strong></div>
+        <div class="performance-progress-text" id="perfReleaseRateProgress">0% to target</div>
+        <div class="performance-progress-bar">
+          <div class="performance-progress-fill" id="perfReleaseRateProgressBar" style="width: 0%"></div>
+        </div>
         <div class="performance-status" id="perfReleaseRateStatus">N/A</div>
       </article>
       <article class="performance-tile">
-        <div class="performance-title">Root Cause Assignment</div>
+        <div class="performance-header">
+          <div class="performance-title">Root Cause Assignment</div>
+          <div class="performance-trend" id="perfRootCauseAssignmentTrend"></div>
+        </div>
         <div class="performance-current" id="perfRootCauseAssignmentCurrent">0.0%</div>
         <div class="performance-goal">Target: <strong id="perfRootCauseAssignmentGoal">90.0%</strong></div>
+        <div class="performance-progress-text" id="perfRootCauseAssignmentProgress">0% to target</div>
+        <div class="performance-progress-bar">
+          <div class="performance-progress-fill" id="perfRootCauseAssignmentProgressBar" style="width: 0%"></div>
+        </div>
         <div class="performance-status" id="perfRootCauseAssignmentStatus">N/A</div>
       </article>
     </section>
@@ -669,9 +817,8 @@
           <button id="refresh-ai-health-btn" type="button">Refresh Status</button>
         </div>
       </div>
-      <p>Generate actionable operations recommendations from the currently filtered data.</p>
-      <button id="generate-ai-insights-btn" type="button">Generate Insights</button>
-      <div id="ai-insights-result">No insights generated yet.</div>
+      <p class="subtitle">AI-powered action plan with specific owners, timelines, and next steps</p>
+      <div id="ai-insights-result">Generating insights...</div>
     </section>
 
     <div class="metrics" id="metrics">
@@ -692,8 +839,8 @@
         <div class="metric-value" id="percentReleased">0%</div>
       </div>
       <div class="metric-card">
-        <div class="tooltip">Percentage of hold units that were scrapped</div>
-        <div class="metric-label">% Scrapped</div>
+        <div class="tooltip">Percentage of hold units that were dumped</div>
+        <div class="metric-label">% Dumped</div>
         <div class="metric-value" id="percentScrapped">0%</div>
       </div>
       <div class="metric-card">
@@ -702,8 +849,8 @@
         <div class="metric-value" id="reworkPercent">0%</div>
       </div>
       <div class="metric-card">
-        <div class="tooltip">Total financial impact from scrapped materials</div>
-        <div class="metric-label">Cost of Scrap</div>
+        <div class="tooltip">Total financial impact from dumped materials</div>
+        <div class="metric-label">Cost of Dump</div>
         <div class="metric-value" id="costScrap">$0</div>
       </div>
       <div class="metric-card">
@@ -721,7 +868,7 @@
       </div>
       <div class="chart-container">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h3 style="margin: 0;">Rework and Scrap Cost Impact</h3>
+          <h3 style="margin: 0;">Rework and Dump Cost Impact</h3>
           <select id="costTimeView" style="padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 4px; background: white; cursor: pointer; font-size: 13px;" onchange="renderDashboard()">
             <option value="day">Day</option>
             <option value="week">Week</option>
@@ -759,6 +906,19 @@
             <!-- Populated by app.js -->
           </tbody>
         </table>
+      </div>
+    </div>
+
+    <!-- Work Order Detail Modal -->
+    <div id="woModal" class="wo-modal">
+      <div class="wo-modal-content">
+        <div class="wo-modal-header">
+          <h2>Work Order Details</h2>
+          <span class="wo-modal-close" onclick="closeWOModal()">&times;</span>
+        </div>
+        <div id="woModalBody" class="wo-detail-grid">
+          <!-- Populated by JavaScript -->
+        </div>
       </div>
     </div>
 
