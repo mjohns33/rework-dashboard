@@ -22,42 +22,8 @@ document.addEventListener('DOMContentLoaded', () => {
   hookUpDateEvents();
   setupDefectDriversSorting();
   setupAIInsights();
-  autoLoadCSV();
   renderDashboard();
 });
-
-// Auto-load CSV file
-function autoLoadCSV() {
-  fetch('./NVA Data for Dashboard.csv')
-    .then(response => {
-      if (!response.ok) {
-        throw new Error('CSV file not found');
-      }
-      return response.text();
-    })
-    .then(csvText => {
-      showMessage('Loading NVA rework data...', 'info');
-      try {
-        const data = parseCSV(csvText);
-        if (data.length === 0) {
-          showMessage('CSV file is empty or invalid format', 'error');
-          return;
-        }
-        reworkData = data;
-        saveData();
-        populateLocationFilter();
-        renderDashboard();
-        showMessage(`✓ Successfully loaded ${data.length} records from NVA Data for Dashboard.csv`, 'success');
-      } catch (parseError) {
-        console.error('Parse error:', parseError);
-        showMessage(`Error parsing CSV: ${parseError.message}`, 'error');
-      }
-    })
-    .catch(error => {
-      console.warn('Auto-load failed:', error);
-      showMessage('NVA Data for Dashboard.csv not found. Please upload a CSV file manually.', 'error');
-    });
-}
 
 // Categorize root causes into Material, Machine, Procedure
 function categorizeRootCause(rootCause) {
@@ -492,6 +458,9 @@ function parseCSV(csv) {
   const plantNameCol = getColIndex(['plantname']);
   const workCenterCol = getColIndex(['workcentertext', 'work center text']);
   const siteCol = getColIndex(['site']);
+  const l1RootCauseCol = getColIndex(['l1 root cause', 'l1rootcause', 'l1 cause']);
+  const l2RootCauseCol = getColIndex(['l2 root cause', 'l2rootcause', 'l2 cause']);
+  const kurzTextCol = getColIndex(['kurz text', 'kurztext', 'kurz']);
   // Robustly find the disposition column (case-insensitive, trimmed, supports 'disposition', 'status', etc.)
   const dispositionCol = normalizedHeader.findIndex(h => {
     const norm = h.replace(/\s+/g, '').toLowerCase();
@@ -585,10 +554,18 @@ function parseCSV(csv) {
     if (disp === 'rework' || disp.startsWith('rework ')) {
       costRework = unitCost * casesReworked;
     }
-    // For scrap: calculate unit cost, then multiply by scrapped cases
-    if (disp === 'scrap' || disp === 'scrapped' || disp.startsWith('scrap ')) {
+    // For scrap/dump: calculate unit cost, then multiply by scrapped cases
+    else if (disp === 'scrap' || disp === 'scrapped' || disp.startsWith('scrap ') || disp === 'dump' || disp === 'dumped' || disp.startsWith('dump ')) {
       const scrappedCases = Math.max(casesProduced - casesReworked, 0);
       costScrap = unitCost * scrappedCases;
+    }
+    // If no specific match, use the cost value directly based on disposition
+    if (costRework === 0 && costScrap === 0 && cost > 0) {
+      if (disp.includes('rework')) {
+        costRework = cost;
+      } else if (disp.includes('scrap') || disp.includes('dump')) {
+        costScrap = cost;
+      }
     }
     const mfgordValue = mfgordCol !== -1 ? row[mfgordCol] : (row[1] || undefined);
     const woValue = mfgordValue || (workOrderCol !== -1 ? row[workOrderCol] : undefined);
@@ -612,6 +589,9 @@ function parseCSV(csv) {
                   ? row[siteCol]
                   : 'Unknown')),
       rootCause: causeCol !== -1 ? row[causeCol] : 'Unknown',
+      l1RootCause: l1RootCauseCol !== -1 ? row[l1RootCauseCol] : undefined,
+      l2RootCause: l2RootCauseCol !== -1 ? row[l2RootCauseCol] : undefined,
+      kurzText: kurzTextCol !== -1 ? row[kurzTextCol] : undefined,
       casesProduced: casesProduced,
       casesReworked: casesReworked,
       cost: cost,
@@ -886,6 +866,7 @@ function renderDashboard() {
   calculateMetrics(active);
   renderCharts(active);
   updateDataInfo();
+  generateAIInsights();
 }
 
 function renderEmptyState() {
@@ -1041,6 +1022,10 @@ function updatePerformanceTile(tileIdPrefix, current, goal, direction, formatTyp
   const currentEl = document.getElementById(`${tileIdPrefix}Current`);
   const goalEl = document.getElementById(`${tileIdPrefix}Goal`);
   const statusEl = document.getElementById(`${tileIdPrefix}Status`);
+  const trendEl = document.getElementById(`${tileIdPrefix}Trend`);
+  const progressTextEl = document.getElementById(`${tileIdPrefix}Progress`);
+  const progressBarEl = document.getElementById(`${tileIdPrefix}ProgressBar`);
+  
   if (!currentEl || !goalEl || !statusEl) return;
 
   const normalizedGoal = formatType === 'percent' && Number.isFinite(goal)
@@ -1056,6 +1041,63 @@ function updatePerformanceTile(tileIdPrefix, current, goal, direction, formatTyp
     statusEl.classList.add(status.className);
   }
   statusEl.textContent = status.text;
+  
+  // Calculate progress percentage and trend
+  if (Number.isFinite(current) && Number.isFinite(normalizedGoal) && normalizedGoal !== 0) {
+    let progressPercent = 0;
+    let trendArrow = '→';
+    let trendClass = 'trend-stable';
+    
+    if (direction === 'lower') {
+      // For metrics where lower is better (rework cost, release rate)
+      // Progress = how much we've reduced from current toward goal
+      if (current <= normalizedGoal) {
+        progressPercent = 100; // Already at or below target
+      } else {
+        // Show progress as we get closer to goal from above
+        progressPercent = Math.max(0, Math.min(100, (1 - ((current - normalizedGoal) / current)) * 100));
+      }
+      
+      if (current < normalizedGoal * 0.95) {
+        trendArrow = '↓';
+        trendClass = 'trend-up'; // Green because we're below target (good)
+      } else if (current > normalizedGoal * 1.05) {
+        trendArrow = '↑';
+        trendClass = 'trend-down'; // Red because we're above target (bad)
+      }
+    } else {
+      // For metrics where higher is better (root cause assignment)
+      progressPercent = Math.max(0, Math.min(100, (current / normalizedGoal) * 100));
+      if (current > normalizedGoal * 1.05) {
+        trendArrow = '↑';
+        trendClass = 'trend-up'; // Green because we're above target (good)
+      } else if (current < normalizedGoal * 0.95) {
+        trendArrow = '↓';
+        trendClass = 'trend-down'; // Red because we're below target (bad)
+      }
+    }
+    
+    // Update trend arrow
+    if (trendEl) {
+      trendEl.textContent = trendArrow;
+      trendEl.className = `performance-trend ${trendClass}`;
+    }
+    
+    // Update progress text
+    if (progressTextEl) {
+      progressTextEl.textContent = `${progressPercent.toFixed(0)}% to target`;
+    }
+    
+    // Update progress bar
+    if (progressBarEl) {
+      progressBarEl.style.width = `${progressPercent}%`;
+    }
+  } else {
+    // No valid data
+    if (trendEl) trendEl.textContent = '';
+    if (progressTextEl) progressTextEl.textContent = 'N/A';
+    if (progressBarEl) progressBarEl.style.width = '0%';
+  }
 }
 
 // ---------- Metrics ----------
@@ -1100,8 +1142,8 @@ function calculateMetrics(data) {
     else if (disp.includes('release')) {
       releasedUnits += Math.max(produced - reworked, 0);
     }
-    // Scrap: disposition contains 'scrap'
-    if (disp.includes('scrap')) {
+    // Scrap/Dump: disposition contains 'scrap' or 'dump'
+    if (disp.includes('scrap') || disp.includes('dump')) {
       scrapUnits += Math.max(produced - reworked, 0);
       scrapCost += d.costScrap || 0;
       foundScrap = true;
@@ -1216,7 +1258,7 @@ function renderDispositionDonut(data) {
   const percentReworked = parseNumberText(document.getElementById('reworkPercent')?.textContent);
   const percentScrapped = parseNumberText(document.getElementById('percentScrapped')?.textContent);
 
-  let mix = { Released: 0, Reworked: 0, Scrapped: 0 };
+  let mix = { Released: 0, Reworked: 0, Dumped: 0 };
 
   // Primary method: use already-calculated KPI percentages × total hold units
   if (
@@ -1226,7 +1268,7 @@ function renderDispositionDonut(data) {
     mix = {
       Released: (totalHoldUnits * percentReleased) / 100,
       Reworked: (totalHoldUnits * percentReworked) / 100,
-      Scrapped: (totalHoldUnits * percentScrapped) / 100
+      Dumped: (totalHoldUnits * percentScrapped) / 100
     };
   } else {
     // Fallback: robust disposition parsing from raw data
@@ -1236,17 +1278,27 @@ function renderDispositionDonut(data) {
       const reworked = parseInt(d.casesReworked) || 0;
       if (disp.includes('release')) mix.Released += Math.max(produced - reworked, 0);
       if (disp.includes('rework')) mix.Reworked += reworked;
-      if (disp.includes('scrap')) mix.Scrapped += Math.max(produced - reworked, 0);
+      if (disp.includes('scrap') || disp.includes('dump')) mix.Dumped += Math.max(produced - reworked, 0);
     });
   }
+
+  // Filter out categories with zero values to prevent empty slices
+  const filteredLabels = [];
+  const filteredValues = [];
+  Object.entries(mix).forEach(([label, value]) => {
+    if (value > 0) {
+      filteredLabels.push(label);
+      filteredValues.push(value);
+    }
+  });
 
   if (window.dispositionDonutChart) window.dispositionDonutChart.destroy();
   window.dispositionDonutChart = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: Object.keys(mix),
+      labels: filteredLabels.length > 0 ? filteredLabels : Object.keys(mix),
       datasets: [{
-        data: Object.values(mix),
+        data: filteredValues.length > 0 ? filteredValues : Object.values(mix),
         backgroundColor: ['#b39b73', '#d94b59', '#7f1320'],
         radius: '84%',
         cutout: '58%'
@@ -1311,8 +1363,17 @@ function renderTimeCostBar(data) {
     const bucket = bucketMap.get(key);
     const disp = (typeof d.disposition === 'string' ? d.disposition : '').toLowerCase();
     if (disp.includes('rework')) bucket.rework += d.costRework || 0;
-    if (disp.includes('scrap')) bucket.scrap += d.costScrap || 0;
+    if (disp.includes('scrap') || disp.includes('dump')) bucket.scrap += d.costScrap || 0;
   });
+
+  if (window && window.console) {
+    console.log('DEBUG renderTimeCostBar: Sample data rows:', data.slice(0, 3).map(d => ({
+      disposition: d.disposition,
+      costRework: d.costRework,
+      costScrap: d.costScrap
+    })));
+    console.log('DEBUG renderTimeCostBar: Buckets:', Array.from(bucketMap.values()));
+  }
 
   const sortedBuckets = Array.from(bucketMap.values()).sort((a, b) => a.sortKey - b.sortKey);
   const labels = sortedBuckets.map((b) => b.label);
@@ -1330,7 +1391,7 @@ function renderTimeCostBar(data) {
       labels,
       datasets: [
         { label: 'Rework', data: reworkData, backgroundColor: '#b39b73' },
-        { label: 'Scrap', data: scrapData, backgroundColor: '#b21f2d' },
+        { label: 'Dump', data: scrapData, backgroundColor: '#b21f2d' },
       ],
     },
     options: {
@@ -1424,10 +1485,11 @@ function renderLevel1RootCauseChart(data) {
   
   console.log('renderLevel1RootCauseChart called with data:', data.length);
   
-  const level1Counts = { Material: 0, Machine: 0, Procedure: 0 };
+  const level1Counts = {};
   data.forEach((d) => {
-    const category = categorizeRootCause(d.rootCause);
-    level1Counts[category] += (d.casesReworked || 0);
+    // Use L1 Root Cause column if available, otherwise categorize from root cause
+    const category = d.l1RootCause || categorizeRootCause(d.rootCause);
+    level1Counts[category] = (level1Counts[category] || 0) + (d.casesReworked || 0);
   });
 
   console.log('Level 1 counts:', level1Counts);
@@ -1486,14 +1548,22 @@ function renderLevel2RootCauseChart(data, category = null) {
   
   console.log('renderLevel2RootCauseChart called for category:', category);
   
-  // Show all root causes from the data source, not filtered by category
+  // Use L2 Root Cause column if available, otherwise fall back to rootCause
   const counts = {};
   data.forEach((d) => {
-    const cause = d.rootCause || 'Unknown';
+    const cause = d.l2RootCause || d.rootCause || 'Unknown';
     counts[cause] = (counts[cause] || 0) + (d.casesReworked || 0);
   });
 
-  console.log('Level 2 counts (all causes):', counts);
+  // Debug: log first few records to verify L2 values
+  if (window && window.console) {
+    console.log('DEBUG L2 Chart - First 5 records:', data.slice(0, 5).map(d => ({
+      l1RootCause: d.l1RootCause,
+      l2RootCause: d.l2RootCause,
+      rootCause: d.rootCause
+    })));
+    console.log('Level 2 counts (all causes):', counts);
+  }
   
   const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
   const labels = sorted.map(([cause]) => cause);
@@ -1578,7 +1648,7 @@ function renderDefectDriversTable(data) {
     });
   }
   
-  tbody.innerHTML = sorted.map(d => {
+  tbody.innerHTML = sorted.map((d, idx) => {
     const wo = String(d.mfgord || d.mfgOrder || d.wo || d.workOrder || '').trim() || '—';
     const date = d.holdDate || d.productionDate || '—';
     const cases = Number(d.casesProduced || 0).toLocaleString();
@@ -1588,8 +1658,11 @@ function renderDefectDriversTable(data) {
     const lagRaw = String(d.reworkLag || '').trim();
     const lagNum = lagRaw ? Number(lagRaw.replace(/[^0-9.\-]/g, '')) : NaN;
     const age = Number.isFinite(lagNum) ? `${lagNum} days` : (lagRaw || '—');
-    return `<tr><td>${wo}</td><td>${date}</td><td>${cases}</td><td>${cause}</td><td>${disp}</td><td>$${Number(cost).toLocaleString()}</td><td>${age}</td></tr>`;
+    return `<tr style="cursor: pointer;" onclick="showWODetails(${idx})" title="Click for details"><td>${wo}</td><td>${date}</td><td>${cases}</td><td>${cause}</td><td>${disp}</td><td>$${Number(cost).toLocaleString()}</td><td>${age}</td></tr>`;
   }).join('');
+  
+  // Store sorted data for modal access
+  window.currentDefectDrivers = sorted;
   
   // Update sort icons
   const casesIcon = document.getElementById('casesSortIcon');
@@ -1630,19 +1703,13 @@ function setupDefectDriversSorting() {
 }
 
 function setupAIInsights() {
-  const button = document.getElementById('generate-ai-insights-btn');
   const refreshButton = document.getElementById('refresh-ai-health-btn');
-
   if (refreshButton) {
     refreshButton.addEventListener('click', () => {
       checkAIBackendHealth(true);
     });
   }
-
   checkAIBackendHealth(false);
-
-  if (!button) return;
-  button.addEventListener('click', generateAIInsights);
 }
 
 function setAIHealthStatus(state) {
@@ -1712,7 +1779,7 @@ function buildAIContext(data) {
     causeCounts[cause] = (causeCounts[cause] || 0) + (parseInt(d.casesReworked) || 0);
 
     const dispNormalized = disposition.toLowerCase();
-    if (dispNormalized.includes('scrap')) {
+    if (dispNormalized.includes('scrap') || dispNormalized.includes('dump')) {
       const produced = parseInt(d.casesProduced) || 0;
       const reworked = parseInt(d.casesReworked) || 0;
       scrapUnits += Math.max(produced - reworked, 0);
@@ -1826,43 +1893,33 @@ function buildLocalInsights(data, metrics) {
 }
 
 async function generateAIInsights() {
-  const button = document.getElementById('generate-ai-insights-btn');
   const result = document.getElementById('ai-insights-result');
-  if (!button || !result) return;
+  if (!result) return;
 
   if (!Array.isArray(reworkData) || reworkData.length === 0) {
-    result.textContent = 'Load CSV data first, then generate insights.';
+    result.textContent = 'Load data to generate insights.';
     return;
   }
 
   const active = getFilteredData();
   if (active.length === 0) {
-    result.textContent = 'No records match your current filters.';
+    result.textContent = 'No records match current filters.';
     return;
   }
 
   const metrics = buildAIContext(active);
   const summaryText = buildAISummaryText(active, metrics);
 
-  button.disabled = true;
-  const originalLabel = button.textContent;
-  button.textContent = 'Generating...';
-  result.textContent = 'Generating AI insights...';
+  result.textContent = 'Generating insights...';
 
   try {
     const response = await fetch(AI_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        summaryText,
-        metrics
-      })
+      body: JSON.stringify({ summaryText, metrics })
     });
 
-    if (!response.ok) {
-      const errorPayload = await response.json().catch(() => ({}));
-      throw new Error(errorPayload.error || `Request failed with status ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Request failed with status ${response.status}`);
 
     const payload = await response.json();
     renderAIInsights(result, payload.insights, payload.keyPhrases);
@@ -1872,10 +1929,7 @@ async function generateAIInsights() {
     setAIHealthStatus('offline');
     const localInsights = buildLocalInsights(active, metrics);
     const localInsightsList = localInsights.map((line) => `<li>${String(line)}</li>`).join('');
-    result.innerHTML = `<div class="ai-insights-meta"><strong>Running in Local Mode:</strong> Backend is unavailable, so these recommendations are generated directly in the dashboard.</div><ol class="ai-insights-list">${localInsightsList}</ol>`;
-  } finally {
-    button.disabled = false;
-    button.textContent = originalLabel;
+    result.innerHTML = `<ol class="ai-insights-list">${localInsightsList}</ol>`;
   }
 }
 
@@ -2001,3 +2055,117 @@ function renderDefectsTable(data) {
           .join('')
       : '<tr><td colspan="3" style="text-align: center; color: #999;">No data loaded</td></tr>';
 }
+
+// Work Order Detail Modal Functions
+function showWODetails(index) {
+  const modal = document.getElementById('woModal');
+  const modalBody = document.getElementById('woModalBody');
+  
+  if (!modal || !modalBody || !window.currentDefectDrivers) return;
+  
+  const d = window.currentDefectDrivers[index];
+  if (!d) return;
+  
+  const wo = String(d.mfgord || d.mfgOrder || d.wo || d.workOrder || '').trim() || '—';
+  const holdDate = d.holdDate || '—';
+  const prodDate = d.productionDate || '—';
+  const location = d.location || '—';
+  const description = d.description || '—';
+  const itemType = d.itemType || '—';
+  const disposition = d.disposition || '—';
+  const rootCause = d.rootCause || '—';
+  const l1RootCause = d.l1RootCause || '—';
+  const l2RootCause = d.l2RootCause || '—';
+  const casesProduced = Number(d.casesProduced || 0).toLocaleString();
+  const casesReworked = Number(d.casesReworked || 0).toLocaleString();
+  const cost = d.cost ? `$${Number(d.cost).toLocaleString()}` : '$0';
+  const costRework = d.costRework ? `$${Number(d.costRework).toLocaleString()}` : '$0';
+  const costScrap = d.costScrap ? `$${Number(d.costScrap).toLocaleString()}` : '$0';
+  const lagRaw = String(d.reworkLag || '').trim();
+  const lagNum = lagRaw ? Number(lagRaw.replace(/[^0-9.\-]/g, '')) : NaN;
+  const reworkLag = Number.isFinite(lagNum) ? `${lagNum} days` : (lagRaw || '—');
+  
+  modalBody.innerHTML = `
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Work Order</div>
+      <div class="wo-detail-value">${wo}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Location</div>
+      <div class="wo-detail-value">${location}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Hold Date</div>
+      <div class="wo-detail-value">${holdDate}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Production Date</div>
+      <div class="wo-detail-value">${prodDate}</div>
+    </div>
+    <div class="wo-detail-item full-width">
+      <div class="wo-detail-label">Product Description</div>
+      <div class="wo-detail-value">${description}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Item Type</div>
+      <div class="wo-detail-value">${itemType}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Disposition</div>
+      <div class="wo-detail-value">${disposition}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Cases Produced</div>
+      <div class="wo-detail-value">${casesProduced}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Cases Reworked</div>
+      <div class="wo-detail-value">${casesReworked}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">L1 Root Cause</div>
+      <div class="wo-detail-value">${l1RootCause}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">L2 Root Cause</div>
+      <div class="wo-detail-value">${l2RootCause}</div>
+    </div>
+    <div class="wo-detail-item full-width">
+      <div class="wo-detail-label">Root Cause Detail</div>
+      <div class="wo-detail-value">${rootCause}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Total Cost</div>
+      <div class="wo-detail-value">${cost}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Rework Cost</div>
+      <div class="wo-detail-value">${costRework}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Dump Cost</div>
+      <div class="wo-detail-value">${costScrap}</div>
+    </div>
+    <div class="wo-detail-item">
+      <div class="wo-detail-label">Rework Lag</div>
+      <div class="wo-detail-value">${reworkLag}</div>
+    </div>
+  `;
+  
+  modal.style.display = 'block';
+}
+
+function closeWOModal() {
+  const modal = document.getElementById('woModal');
+  if (modal) {
+    modal.style.display = 'none';
+  }
+}
+
+// Close modal when clicking outside of it
+window.onclick = function(event) {
+  const modal = document.getElementById('woModal');
+  if (event.target === modal) {
+    closeWOModal();
+  }
+};
