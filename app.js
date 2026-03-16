@@ -31,6 +31,13 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function fetchDefaultData() {
+  if (location.protocol === 'file:') {
+    showMessage('Running locally — please upload the CSV file to load data.', 'info');
+    const uploadArea = document.querySelector('.controls');
+    if (uploadArea) uploadArea.style.display = 'block';
+    renderDashboard();
+    return;
+  }
   try {
     const response = await fetch('./NVA Data for Dashboard.csv');
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
