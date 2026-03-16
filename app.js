@@ -22,8 +22,31 @@ document.addEventListener('DOMContentLoaded', () => {
   hookUpDateEvents();
   setupDefectDriversSorting();
   setupAIInsights();
-  renderDashboard();
+  if (reworkData.length > 0) {
+    populateLocationFilter();
+    renderDashboard();
+  } else {
+    fetchDefaultData();
+  }
 });
+
+async function fetchDefaultData() {
+  try {
+    const response = await fetch('./NVA Data for Dashboard.csv');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const csv = await response.text();
+    const data = parseCSV(csv);
+    if (data.length === 0) throw new Error('No records parsed');
+    reworkData = data;
+    saveData();
+    populateLocationFilter();
+    renderDashboard();
+  } catch (err) {
+    showMessage('Could not auto-load data. Please upload a CSV file.', 'error');
+    console.error('fetchDefaultData failed:', err);
+    renderDashboard();
+  }
+}
 
 // Categorize root causes into Material, Machine, Procedure
 function categorizeRootCause(rootCause) {
