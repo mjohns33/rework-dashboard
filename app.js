@@ -1575,10 +1575,9 @@ function renderLevel2RootCauseChart(data, category = null) {
   
   console.log('renderLevel2RootCauseChart called for category:', category);
   
-  // Use L2 Root Cause column if available, otherwise fall back to rootCause
   const counts = {};
   data.forEach((d) => {
-    const cause = d.l2RootCause || d.rootCause || 'Unknown';
+    const cause = d.l2RootCause || 'Unknown';
     counts[cause] = (counts[cause] || 0) + (d.casesReworked || 0);
   });
 
