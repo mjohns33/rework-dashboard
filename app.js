@@ -742,14 +742,18 @@ function populateLocationFilter() {
   });
   updateSelectedText();
   // Dropdown open/close logic
-  dropdownSelected.onclick = () => {
+  dropdownSelected.onclick = (e) => {
+    e.stopPropagation();
     dropdownList.style.display = dropdownList.style.display === 'none' ? 'block' : 'none';
   };
-  document.addEventListener('click', (e) => {
-    if (!dropdownList.contains(e.target) && !dropdownSelected.contains(e.target)) {
-      dropdownList.style.display = 'none';
-    }
-  });
+  if (!dropdownList._outsideClickBound) {
+    dropdownList._outsideClickBound = true;
+    document.addEventListener('click', (e) => {
+      if (!dropdownList.contains(e.target) && !dropdownSelected.contains(e.target)) {
+        dropdownList.style.display = 'none';
+      }
+    });
+  }
 }
 
 // ---------- UI Helpers ----------
